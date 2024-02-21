@@ -4,6 +4,12 @@ module nft::nft {
     use sui::object::{Self, UID};
     use sui::transfer;
     use sui::tx_context::{Self, TxContext};
+    use sui::coin::{Self, Coin};
+    use sui::sui::SUI;
+
+    const Fee:u64 = 100;
+    const EInsufficientBalance: u64 = 3;
+    const AdminAdress:address = @0xfe65cf3f401586ad76108d97b4a49fa382c3b16235f36e0fc972035b25414e9e;
  
     struct NFT has key, store {
         id: UID, 
@@ -11,7 +17,10 @@ module nft::nft {
         description: string::String
     }
 
-    public entry fun mint(name: vector<u8>, description: vector<u8>, ctx: &mut TxContext) {
+    public entry fun mint(name: vector<u8>, description: vector<u8>, token: &mut Coin<SUI>, ctx: &mut TxContext) {
+        assert!(coin::value(token) > Fee, EInsufficientBalance);
+        let paid = coin::split(token, Fee, ctx);
+        transfer::public_transfer(paid,AdminAdress);
 
         let nft = NFT {
             id: object::new(ctx),
