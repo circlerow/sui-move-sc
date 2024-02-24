@@ -1,4 +1,6 @@
 module bank::bank {
+    use std::type_name::{Self, TypeName};
+    use std::ascii::{ String};
     use sui::transfer;
     use sui::vec_set::{Self, VecSet};
     use sui::object::{Self, UID};
@@ -8,6 +10,7 @@ module bank::bank {
     use sui::bag::{Self, Bag};
     use sui::balance::{Self, Balance};
     use sui::ed25519;
+    use sui::dynamic_field as df;
 
     const EInvalidAmount: u64 = 1;
     const EInvalidSignature: u64 = 2;
@@ -17,22 +20,18 @@ module bank::bank {
 
     struct SimpleBank has key {
         id: UID,
-        balances: Bag,
     }
 
     struct AllowCurrency has key {
         id: UID,
-        typeCurrency: VecSet<address>,
     }
 
-    struct AdminCap has key, store {
-        id: UID,
-        admin: address,
-    }
+    struct TypeCurrency<phantom T> has copy, drop, store { }
 
-    struct EventDeposit has copy, drop {
+
+    struct EventDeposit<phantom CoinType> has copy, drop {
         depositor: address,
-        token: address,
+        token: String,
         amount: u64,
         fee: u64,
     }
@@ -48,59 +47,37 @@ module bank::bank {
         transfer::share_object(
             SimpleBank {
                 id: object::new(ctx),
-                balances: bag::new(ctx),
             },
         );
         transfer::share_object(
             AllowCurrency {
                 id: object::new(ctx),
-                typeCurrency: vec_set::empty(),
             },
-        );
-        transfer::public_transfer(
-            AdminCap {
-                id: object::new(ctx),
-                admin: tx_context::sender(ctx),
-            },
-            tx_context::sender(ctx),
         )
     }
 
-    public entry fun addAllowCurrency(
-        _ : &AdminCap,
+    public entry fun addAllowCurrency<CoinType>(
         allowCurrency: &mut AllowCurrency,
-        typeCurrency: address,
     ) {
-        assert!(
-            !vec_set::contains(&allowCurrency.typeCurrency, &typeCurrency),
-            EExistCurrency,
-        );
-        vec_set::insert(&mut allowCurrency.typeCurrency, typeCurrency);
+        df::add(&mut allowCurrency.id, TypeCurrency<CoinType> {}, true);
     }
 
-    public entry fun removeAllowCurrency(
-        _ : &AdminCap,
+    public entry fun removeAllowCurrency<CoinType>(
         allowCurrency: &mut AllowCurrency,
-        typeCurrency: address,
     ) {
-        assert!(
-            vec_set::contains(&allowCurrency.typeCurrency, &typeCurrency),
-            ENotExistCurrency,
-        );
-        vec_set::remove(&mut allowCurrency.typeCurrency, &typeCurrency);
+        let value : bool = df::remove(&mut allowCurrency.id, TypeCurrency<CoinType> {});
     }
 
-    public entry fun deposit<T: drop>(
+    public entry fun deposit<CoinType: drop>(
         allowCurrency: &AllowCurrency,
         simpleBank: &mut SimpleBank,
-        token: &mut Coin<T>,
+        token: &mut Coin<CoinType>,
         amount: u64,
         ctx: &mut TxContext,
     ) {
         let depositor = tx_context::sender(ctx);
-        let currency = object::id_address(token);
         assert!(
-            vec_set::contains(&allowCurrency.typeCurrency, &currency),
+            df::exists_(&allowCurrency.id, TypeCurrency<CoinType> {}),
             ENotExistCurrency,
         );
         let value = coin::value(token);
@@ -109,58 +86,57 @@ module bank::bank {
         let paid = coin::split(token, amount, ctx);
         let amountAfterFee;
 
-        if (bag::contains(&simpleBank.balances, currency)) {
-            let balance = bag::borrow_mut(&mut simpleBank.balances, currency);
-            let balanceBefore = balance::value(balance);
-            balance::join(balance, coin::into_balance(paid));
-            let balanceAfter = balance::value(balance);
-            amountAfterFee = balanceAfter - balanceBefore;
+        if (df::exists_(&simpleBank.id, TypeCurrency<CoinType> {})) {
+            let balance: &mut Coin<CoinType> = df::borrow_mut(&mut simpleBank.id, TypeCurrency<CoinType> {});
+            let amountBeforeDeposit = coin::value(balance);
+            coin::join(balance, paid);
+            let amountAfterDeposit = coin::value(balance);
+            amountAfterFee = amountAfterDeposit - amountBeforeDeposit;
         } else {
-            bag::add(&mut simpleBank.balances, currency, coin::into_balance(paid));
-            let balance: &Balance<T> = bag::borrow(&simpleBank.balances, currency);
-            let balanceAfter = balance::value(balance);
-            amountAfterFee = balanceAfter;
+            df::add(&mut simpleBank.id, TypeCurrency<CoinType> {}, paid);
+            let balance: &Coin<CoinType> = df::borrow(&simpleBank.id, TypeCurrency<CoinType> {});
+            amountAfterFee = coin::value(balance);
         };
-        let fee = amount - amountAfterFee;
+        let fee = amountAfterFee - amount;
 
-        event::emit(EventDeposit {
+        event::emit(EventDeposit<CoinType> {
             depositor,
-            token: currency,
+            token: type_name::get<CoinType>().name,
             amount,
             fee,
         });
     }
 
-    public entry fun withdraw<T: drop>(
-        simpleBank: &mut SimpleBank,
-        amount: u64,
-        currency: address,
-        signature: vector<u8>,
-        message: vector<u8>,
-        public_key: vector<u8>,
-        requestId: u64,
-        ctx: &mut TxContext,
-    ) {
-        assert!(
-            ed25519::ed25519_verify(&signature, &public_key, &message),
-            EInvalidSignature,
-        );
-        assert!(amount > 0, EInvalidAmount);
-        let sender = tx_context::sender(ctx);
+    // public entry fun withdraw<T: drop>(
+    //     simpleBank: &mut SimpleBank,
+    //     amount: u64,
+    //     currency: address,
+    //     signature: vector<u8>,
+    //     message: vector<u8>,
+    //     public_key: vector<u8>,
+    //     requestId: u64,
+    //     ctx: &mut TxContext,
+    // ) {
+    //     assert!(
+    //         ed25519::ed25519_verify(&signature, &public_key, &message),
+    //         EInvalidSignature,
+    //     );
+    //     assert!(amount > 0, EInvalidAmount);
+    //     let sender = tx_context::sender(ctx);
 
-        let balance: &mut Balance<T> = bag::borrow_mut(&mut simpleBank.balances, currency);
-        assert!(balance::value(balance) >= amount, EInsufficientBalance);
+    //     let balance: &mut Balance<T> = bag::borrow_mut(&mut simpleBank.balances, currency);
+    //     assert!(balance::value(balance) >= amount, EInsufficientBalance);
 
-        let withdrawBalance = balance::split(balance, amount);
+    //     let withdrawBalance = balance::split(balance, amount);
 
-        let takeCoin = coin::from_balance(withdrawBalance, ctx);
-        transfer::public_transfer(takeCoin, sender);
+    //     let takeCoin = coin::from_balance(withdrawBalance, ctx);
+    //     transfer::public_transfer(takeCoin, sender);
 
-        event::emit(EventWithdraw {
-            user: sender,
-            token: currency,
-            amount,
-            requestId,
-        });
-    }
+    //     event::emit(EventWithdraw {
+    //         user: sender,
+    //         token: currency,
+    //         amount,
+    //         requestId,
+    //     });
+    // }
 }
