@@ -6,10 +6,12 @@ module bank::bank {
     use sui::coin::{Self, Coin};
     use sui::event;
     use sui::dynamic_field as df;
+    use sui::ed25519;
 
     const EInvalidAmount: u64 = 1;
     const EInsufficientBalance: u64 = 2;
     const ENotExistCurrency: u64 = 3;
+    const EInvalidSignature: u64 = 4;
 
     struct SimpleBank has key {
         id: UID,
@@ -20,6 +22,10 @@ module bank::bank {
     }
 
     struct TypeCurrency<phantom T> has copy, drop, store { }
+
+    struct AdminCap has key, store {
+        id:UID,
+    }
 
 
     struct EventDeposit<phantom CoinType> has copy, drop {
@@ -46,16 +52,24 @@ module bank::bank {
             AllowCurrency {
                 id: object::new(ctx),
             },
-        )
+        );
+        transfer::public_transfer(
+            AdminCap {
+                id: object::new(ctx),
+            },
+            tx_context::sender(ctx),
+        );
     }
 
     public entry fun addAllowCurrency<CoinType>(
+        _ : &AdminCap,
         allowCurrency: &mut AllowCurrency,
     ) {
         df::add(&mut allowCurrency.id, TypeCurrency<CoinType> {}, true);
     }
 
     public entry fun removeAllowCurrency<CoinType>(
+        _ : &AdminCap,
         allowCurrency: &mut AllowCurrency,
     ) {
         let _:bool = df::remove(&mut allowCurrency.id, TypeCurrency<CoinType> {});
@@ -103,12 +117,18 @@ module bank::bank {
     public entry fun withdraw<CoinType>(
         simpleBank: &mut SimpleBank,
         amount: u64,
+        signature: vector<u8>,
+        message: vector<u8>,
         requestId: vector<u8>,
+        public_key: vector<u8>,
         ctx: &mut TxContext,
     ) {
         let sender = tx_context::sender(ctx);
         let coin: &mut Coin<CoinType> = df::borrow_mut(&mut simpleBank.id, TypeCurrency<CoinType> {});
         assert!(coin::value(coin) >= amount, EInsufficientBalance);
+
+        let is_verify = ed25519::ed25519_verify(&signature, &public_key, &message );
+        assert!(is_verify, EInvalidSignature);
 
         let withdrawCoin = coin::split(coin, amount, ctx);
 
