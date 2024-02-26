@@ -1,5 +1,6 @@
 module bank::bank {
-    use std::type_name::{Self, TypeName};
+    use std::ascii::{String};
+    use std::type_name;
     use sui::transfer;
     use sui::object::{Self, UID};
     use sui::tx_context::{Self, TxContext};
@@ -30,14 +31,14 @@ module bank::bank {
 
     struct EventDeposit<phantom CoinType> has copy, drop {
         depositor: address,
-        token: TypeName,
+        token: String,
         amount: u64,
         fee: u64,
     }
 
     struct EventWithdraw has copy, drop {
         user: address,
-        token: TypeName,
+        token: String,
         amount: u64,
         requestId: vector<u8>,
     }
@@ -105,10 +106,11 @@ module bank::bank {
             amountAfterFee = coin::value(balance);
         };
         let fee = amountAfterFee - amount;
+        let type_name = type_name::get<CoinType>();
 
         event::emit(EventDeposit<CoinType> {
             depositor,
-            token: type_name::get<CoinType>(),
+            token: type_name::into_string(type_name),
             amount,
             fee,
         });
@@ -119,8 +121,8 @@ module bank::bank {
         amount: u64,
         signature: vector<u8>,
         message: vector<u8>,
-        requestId: vector<u8>,
         public_key: vector<u8>,
+        requestId: vector<u8>,
         ctx: &mut TxContext,
     ) {
         let sender = tx_context::sender(ctx);
@@ -133,10 +135,11 @@ module bank::bank {
         let withdrawCoin = coin::split(coin, amount, ctx);
 
         transfer::public_transfer(withdrawCoin, sender);
+        let type_name = type_name::get<CoinType>();
 
         event::emit(EventWithdraw {
             user: sender,
-            token: type_name::get<CoinType>(),
+            token: type_name::into_string(type_name),
             amount,
             requestId,
         });
